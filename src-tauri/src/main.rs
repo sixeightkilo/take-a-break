@@ -35,7 +35,7 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![command])
+        .invoke_handler(tauri::generate_handler![command, is_debug_build])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -43,4 +43,9 @@ fn main() {
 #[tauri::command]
 async fn command(payload: String, tx: tauri::State<'_, mpsc::Sender<String>>) -> Result<(), ()> {
     tx.send(payload).await.map_err(|_| ())
+}
+
+#[tauri::command]
+fn is_debug_build() -> bool {
+    cfg!(feature = "debug")
 }

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Constants } from './constants.js'
 import { PubSub } from './pubsub.js'
 import { Utils } from './utils.js'
@@ -11,14 +12,22 @@ const TAG = "router";
 
 class Router {
     constructor() {
-        document.addEventListener('DOMContentLoaded', () => {                                                         
-            this.init();
+        document.addEventListener('DOMContentLoaded', async () => {
+            await this.init();
             Logger.Log(TAG, "DOMContentLoaded");
             PubSub.publish(Constants.EVENT_DOM_LOADED, {});
         }) 
     }
 
-    init() {
+    async init() {
+        if (await invoke('is_debug_build')) {
+            const ruleTemplate = document.getElementById('rule-template');
+            ruleTemplate.innerHTML = ruleTemplate.innerHTML.replace(
+                '<option value="10">10 minutes</option>',
+                '<option value="1">1 minute</option><option value="10">10 minutes</option>'
+            );
+        }
+
         this.$container = document.getElementById('container');
 
         this.app = new App(this.$container);

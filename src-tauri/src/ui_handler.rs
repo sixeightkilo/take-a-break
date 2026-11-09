@@ -4,6 +4,7 @@ mod alarm_manager;
 mod ui_handler {
 
     use super::alarm_manager::*;
+    use crate::settings::Settings;
     use crate::utils::*;
     use chrono::Weekday;
     use tauri::Emitter;
@@ -15,8 +16,8 @@ mod ui_handler {
     use serde_json::json;
     use serde_json::Value;
     use std::fmt;
-    use std::fs::{File, OpenOptions};
-    use std::io::{Read, Write};
+    use std::fs::OpenOptions;
+    use std::io::Read;
     use tauri::AppHandle;
     // use tauri::Manager;
     use tauri::Wry;
@@ -43,6 +44,7 @@ mod ui_handler {
     #[derive(Clone, Debug)]
     pub enum Payload {
         Rules(Vec<Rule>),
+        BreakDuration(u64),
         Alarm(Option<Alarm>),
     }
 
@@ -51,6 +53,8 @@ mod ui_handler {
         //from the UI
         CmdStartup,
         CmdUpdateRules,
+        CmdUpdateBreakDuration,
+        EvtBreakDurationApplied,
         //For UI
         EvtRulesApplied,
         EvtStarted,
@@ -66,6 +70,7 @@ mod ui_handler {
         pub fn from_str(typ: &str) -> Option<Self> {
             match typ {
                 "cmd-update-rules" => Some(MessageType::CmdUpdateRules),
+                "cmd-update-break-duration" => Some(MessageType::CmdUpdateBreakDuration),
                 "cmd-startup" => Some(MessageType::CmdStartup),
                 _ => None,
             }
@@ -75,6 +80,7 @@ mod ui_handler {
     impl fmt::Display for MessageType {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
+                MessageType::EvtBreakDurationApplied => write!(f, "event-break-duration-applied"),
                 MessageType::EvtNextAlarm => write!(f, "event-next-alarm"),
                 MessageType::EvtStarted => write!(f, "event-started"),
                 MessageType::EvtRulesApplied => write!(f, "event-rules-applied"),
@@ -117,6 +123,7 @@ mod ui_handler {
         am_tx: BcastSender<Message>,
         am_rx: BcastReceiver<Message>,
         rules: Vec<Rule>,
+        break_duration: u64,
         prev_alarm: Option<Alarm>,
     }
 
@@ -125,20 +132,26 @@ mod ui_handler {
             let (am_tx, am_rx): (BcastSender<Message>, BcastReceiver<Message>) =
                 broadcast::channel(BCAST_CHANNEL_SIZE);
 
-            let rules = Self::read_rules();
+            let settings = Self::read_settings();
 
             Self {
                 ui_rx,
                 win_handle,
                 am_tx,
                 am_rx,
-                rules,
+                rules: settings.rules,
+                break_duration: settings.break_duration,
                 prev_alarm: None,
             }
         }
 
         pub fn run(mut self) {
-            let am = AlarmManager::new(self.am_tx.clone(), self.am_tx.subscribe());
+            let am = AlarmManager::new(
+                self.am_tx.clone(),
+                self.am_tx.subscribe(),
+                &self.rules,
+                self.break_duration,
+            );
 
             // Start AlarmManager inside Tauri runtime
             tauri::async_runtime::spawn(async move {
@@ -207,6 +220,9 @@ mod ui_handler {
             if let Some(typ) = json.get("type").and_then(|n| n.as_str()) {
                 match MessageType::from_str(typ) {
                     Some(MessageType::CmdUpdateRules) => self.handle_update_rules(json),
+                    Some(MessageType::CmdUpdateBreakDuration) => {
+                        self.handle_update_break_duration(json)
+                    }
                     Some(MessageType::CmdStartup) => self.handle_startup(),
                     _ => (),
                 }
@@ -220,9 +236,16 @@ mod ui_handler {
             };
 
             self.am_tx.send(c).unwrap();
+            self.am_tx
+                .send(Message {
+                    typ: MessageType::CmdUpdateBreakDuration,
+                    payload: Payload::BreakDuration(self.break_duration),
+                })
+                .unwrap();
 
             let json = json!({
-                "rules": serde_json::to_string(&self.rules).unwrap()
+                "rules": serde_json::to_string(&self.rules).unwrap(),
+                "break_duration": self.break_duration
             });
 
             self.win_handle
@@ -241,7 +264,10 @@ mod ui_handler {
                 }
             }
 
-            Self::save_rules(&rule_objects);
+            if let Err(error) = self.save_settings(&rule_objects, self.break_duration) {
+                log::error!("Could not save rules: {}", error);
+                return;
+            }
 
             let c = Message {
                 typ: MessageType::CmdUpdateAlarms,
@@ -252,7 +278,8 @@ mod ui_handler {
             self.rules = rule_objects;
 
             let json = json!({
-                "rules": serde_json::to_string(&self.rules).unwrap()
+                "rules": serde_json::to_string(&self.rules).unwrap(),
+                "break_duration": self.break_duration
             });
 
             self.win_handle
@@ -260,13 +287,50 @@ mod ui_handler {
                 .unwrap();
         }
 
-        fn save_rules(rules: &Vec<Rule>) {
-            let serialized_rules = serde_json::to_string(&rules).unwrap();
-            let mut file = File::create(get_settings_file_name()).unwrap();
-            file.write_all(serialized_rules.as_bytes()).unwrap();
+        fn handle_update_break_duration(&mut self, json: Value) {
+            let Some(duration) = json
+                .get("break_duration")
+                .and_then(Value::as_u64)
+                .filter(|n| (1..=5).contains(n))
+            else {
+                return;
+            };
+            if let Err(error) = self.save_settings(&self.rules, duration) {
+                log::error!("Could not save break duration: {}", error);
+                let _ = self.win_handle.emit(
+                    &MessageType::EvtBreakDurationApplied.to_string(),
+                    json!({"failed": true}).to_string(),
+                );
+                return;
+            }
+            self.break_duration = duration;
+            self.am_tx
+                .send(Message {
+                    typ: MessageType::CmdUpdateBreakDuration,
+                    payload: Payload::BreakDuration(duration),
+                })
+                .unwrap();
+            self.win_handle
+                .emit(
+                    &MessageType::EvtBreakDurationApplied.to_string(),
+                    json!({"break_duration": duration}).to_string(),
+                )
+                .unwrap();
         }
 
-        fn read_rules() -> Vec<Rule> {
+        fn save_settings(&self, rules: &[Rule], break_duration: u64) -> std::io::Result<()> {
+            let settings = Settings {
+                rules: rules.to_vec(),
+                break_duration,
+            };
+            let serialized = serde_json::to_string(&settings).unwrap();
+            let path = std::path::PathBuf::from(get_settings_file_name());
+            let temporary = path.with_extension("json.tmp");
+            std::fs::write(&temporary, serialized)?;
+            std::fs::rename(temporary, path)
+        }
+
+        fn read_settings() -> Settings {
             let path = get_settings_file_name();
 
             // Ensure parent directory exists
@@ -284,11 +348,7 @@ mod ui_handler {
             let mut contents = String::new();
             file.read_to_string(&mut contents).unwrap();
 
-            if contents.trim().is_empty() {
-                Vec::new()
-            } else {
-                serde_json::from_str(&contents).unwrap_or_else(|_| Vec::new())
-            }
+            Settings::parse(&contents)
         }
     }
 }

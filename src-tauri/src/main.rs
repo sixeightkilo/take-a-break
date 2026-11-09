@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod player;
+mod settings;
+#[cfg(debug_assertions)]
+use tauri::Manager;
 mod ui_handler;
 mod utils;
 

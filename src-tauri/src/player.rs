@@ -1,43 +1,55 @@
 mod player {
     use crate::utils::*;
-    //use log::debug;
-    use rodio::{source::Source, Decoder, OutputStream};
+    use rodio::{source::SineWave, source::Source, Decoder, OutputStream, Sink};
     use std::io::Cursor;
-    use std::thread;
-
-    const BEEP_INTERVAL: u64 = 1000; //milliseconds
-    const PLAY_DURATION: u64 = 1000;
+    use std::time::Duration;
 
     #[cfg(feature = "debug")]
-    const MAX_TIMES: u64 = 1;
-
+    const START_REPEATS: usize = 1;
     #[cfg(not(feature = "debug"))]
-    const MAX_TIMES: u64 = 5;
+    const START_REPEATS: usize = 5;
 
     pub fn play() {
-        match is_locked() {
-            LockedState::Locked => return,
-            _ => (),
+        play_sound(false);
+    }
+    pub fn play_end() {
+        play_sound(true);
+    }
+
+    fn play_sound(end: bool) {
+        if matches!(is_locked(), LockedState::Locked) {
+            return;
         }
-
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let mp3_data = include_bytes!("beep.mp3");
-        let cursor = Cursor::new(mp3_data);
-
-        let source = Decoder::new(cursor).unwrap();
-        let buffered = source.buffered();
-
-        for _ in 0..MAX_TIMES {
-            let sh = stream_handle.clone();
-            let src = buffered.clone();
-
-            thread::spawn(move || {
-                sh.play_raw(src.convert_samples()).unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(PLAY_DURATION));
-            });
-
-            std::thread::sleep(std::time::Duration::from_millis(BEEP_INTERVAL));
+        let Ok((_stream, handle)) = OutputStream::try_default() else {
+            return;
+        };
+        let Ok(sink) = Sink::try_new(&handle) else {
+            return;
+        };
+        if end {
+            for _ in 0..4 {
+                sink.append(
+                    SineWave::new(880.0)
+                        .amplify(0.2)
+                        .take_duration(Duration::from_millis(180)),
+                );
+                sink.append(
+                    SineWave::new(880.0)
+                        .amplify(0.0)
+                        .take_duration(Duration::from_millis(150)),
+                );
+            }
+        } else {
+            for _ in 0..START_REPEATS {
+                let Ok(source) = Decoder::new(Cursor::new(include_bytes!("beep.mp3"))) else {
+                    return;
+                };
+                // Preserve the existing one-beep-per-second start pattern.
+                sink.append(source.take_duration(Duration::from_secs(1)));
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
+        sink.sleep_until_end();
     }
 }
 

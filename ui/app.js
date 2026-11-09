@@ -14,6 +14,8 @@ class App {
 
         this.$root.replaceChildren(Utils.generateNode(this.rootTemplate, {}));
         this.rules = [];
+        this.breakDuration = 1;
+        this.settingsLoaded = false;
         this.bindHandlers();
     }
 
@@ -22,6 +24,9 @@ class App {
         PubSub.subscribe(Constants.EVENT_STARTED, (e) => {
             Logger.Log(TAG, JSON.stringify(e));
             this.rules = e.rules;
+            this.breakDuration = e.break_duration;
+            this.settingsLoaded = true;
+            this.updateBreakDuration();
             let rules = new Rules(this.$root.querySelector('.tab-content.rules'));
             rules.load(this.rules);
             this.$numOfRules.innerHTML = this.rules.length;
@@ -31,6 +36,9 @@ class App {
         PubSub.subscribe(Constants.EVENT_RULES_APPLIED, (e) => {
             Logger.Log(TAG, JSON.stringify(e));
             this.rules = e.rules;
+            this.breakDuration = e.break_duration;
+            this.settingsLoaded = true;
+            this.updateBreakDuration();
             this.$numOfRules.innerHTML = this.rules.length;
         });
 
@@ -39,6 +47,21 @@ class App {
             this.next = e.alarms['next-alarm'] ?? null;
             this.prev = e.alarms['prev-alarm'] ?? null;
             this.updateTitleBar();
+        });
+
+        PubSub.subscribe(Constants.EVENT_BREAK_DURATION_APPLIED, (e) => {
+            if (!e.failed) this.breakDuration = e.break_duration;
+            this.updateBreakDuration();
+            if (e.failed) Utils.alert("Could not save break duration", 3000);
+            else Utils.info("Saved. Applies from the next break start.", 2000);
+        });
+
+        this.$root.addEventListener('change', (e) => {
+            if (e.target.id !== 'break-duration') return;
+            const duration = Number(e.target.value);
+            if (!Number.isInteger(duration) || duration < 1 || duration > 5) return;
+            e.target.disabled = true;
+            PubSub.publish(Constants.EVENT_BREAK_DURATION_UPDATED, {break_duration: duration});
         });
 
         this.$root.addEventListener('click', (e) => {
@@ -53,6 +76,13 @@ class App {
                 PubSub.publish(Constants.PAGE_HELP, {});
             }
         });
+    }
+
+    updateBreakDuration() {
+        const select = this.$root.querySelector('#break-duration');
+        if (!select) return;
+        select.value = this.breakDuration;
+        select.disabled = !this.settingsLoaded;
     }
 
     updateTitleBar() {
@@ -85,6 +115,7 @@ class App {
         rules.load(this.rules);
 
         this.updateTitleBar();
+        this.updateBreakDuration();
     }
 }
 

@@ -1,17 +1,17 @@
-//! Implements core timer functionality. Starts a thread which
-//! wakes up every minute and checks if an alarm is to be played.
-//! CPU usage (on Mac) is not significant
-//! The tread runs throughout the life of the app. No need to handle
-//! shutdown
+//! Keeps scheduled break starts on wall-clock times and checks independent
+//! break-end deadlines each second. Sound playback runs off the async scheduler.
 
 mod alarm_utils;
 mod alarm_manager {
 
     use super::alarm_utils::*;
-    use crate::player::play;
+    use crate::player::{play, play_end};
+    use crate::utils::{is_locked, LockedState};
     // use crate::Alarm;
     // use crate::{BcastReceiver, BcastSender, Message, MessageType, Payload};
-    use crate::ui_handler::{Alarm, BcastReceiver, BcastSender, Message, MessageType, Payload};
+    use crate::ui_handler::{
+        Alarm, BcastReceiver, BcastSender, Message, MessageType, Payload, Rule,
+    };
 
     use chrono::{offset::Local, Datelike, Timelike, Weekday};
     use std::time::Duration;
@@ -19,20 +19,73 @@ mod alarm_manager {
     use log::debug;
     use std::collections::HashMap;
 
+    struct BreakReminders {
+        duration: u64,
+        deadlines: Vec<i64>,
+    }
+
+    impl Default for BreakReminders {
+        fn default() -> Self {
+            Self {
+                duration: 1,
+                deadlines: Vec::new(),
+            }
+        }
+    }
+
+    impl BreakReminders {
+        fn start(&mut self, now_ms: i64) {
+            self.deadlines.push(now_ms + self.duration as i64 * 60_000);
+        }
+
+        fn take_due(&mut self, now_ms: i64) -> usize {
+            let mut due = 0;
+            self.deadlines.retain(|deadline| {
+                if *deadline > now_ms {
+                    return true;
+                }
+                // Discard old reminders after a prolonged sleep rather than replaying them.
+                if now_ms - *deadline < 60_000 {
+                    due += 1;
+                }
+                false
+            });
+            due
+        }
+    }
+
     pub struct AlarmManager {
         tx: BcastSender<Message>,
         rx: BcastReceiver<Message>,
         alarms: HashMap<Weekday, HashMap<usize, Vec<usize>>>,
+        reminders: BreakReminders,
+        last_minute: Option<i64>,
     }
 
     impl AlarmManager {
-        pub fn new(tx: BcastSender<Message>, rx: BcastReceiver<Message>) -> Self {
-            let alarms: HashMap<Weekday, HashMap<usize, Vec<usize>>> = HashMap::new();
-            Self { tx, rx, alarms }
+        pub fn new(
+            tx: BcastSender<Message>,
+            rx: BcastReceiver<Message>,
+            rules: &[Rule],
+            duration: u64,
+        ) -> Self {
+            let alarms = get_alarms(rules);
+            Self {
+                tx,
+                rx,
+                alarms,
+                reminders: BreakReminders {
+                    duration,
+                    ..BreakReminders::default()
+                },
+                last_minute: None,
+            }
         }
 
         pub fn run(mut self) {
             tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         msg = self.rx.recv() => {
@@ -42,7 +95,7 @@ mod alarm_manager {
                             }
                         }
 
-                        _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                        _ = ticker.tick() => {
                             self.handle_timer_expiry();
                         }
                     }
@@ -50,10 +103,17 @@ mod alarm_manager {
             });
         }
 
-        /// Recurring 1 minute timer
-        fn handle_timer_expiry(&self) {
-            debug!("alarm_manager: timer expiry");
+        /// Check end deadlines each second and scheduled starts once per wall-clock minute.
+        fn handle_timer_expiry(&mut self) {
             let now = Local::now();
+            if self.reminders.take_due(now.timestamp_millis()) > 0 {
+                tauri::async_runtime::spawn_blocking(play_end);
+            }
+            let minute = now.timestamp().div_euclid(60);
+            if self.last_minute == Some(minute) {
+                return;
+            }
+            self.last_minute = Some(minute);
             let current_weekday: Weekday = now.weekday();
             let current_hour: usize = now.hour() as usize;
             let current_minute: usize = now.minute() as usize;
@@ -62,7 +122,10 @@ mod alarm_manager {
                 if let Some(minute_vec) = hour_map.get(&current_hour) {
                     if minute_vec.contains(&current_minute) {
                         debug!("alarm_manager: playing alarm");
-                        play();
+                        if !matches!(is_locked(), LockedState::Locked) {
+                            self.reminders.start(now.timestamp_millis());
+                            tauri::async_runtime::spawn_blocking(play);
+                        }
 
                         let c = Message {
                             typ: MessageType::EvtPlayingAlarm,
@@ -87,6 +150,11 @@ mod alarm_manager {
         fn handle_message(&mut self, msg: Message) {
             debug!("alarm_manager:{:?}", msg);
             match msg.typ {
+                MessageType::CmdUpdateBreakDuration => {
+                    if let Payload::BreakDuration(duration) = msg.payload {
+                        self.reminders.duration = duration;
+                    }
+                }
                 MessageType::CmdUpdateAlarms => {
                     self.update_alarms(msg.payload);
                     self.notify_next_alarm();
@@ -129,13 +197,39 @@ mod alarm_manager {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::utils::*;
-        use crate::Rule;
-        use maplit::hashmap;
+        use crate::ui_handler::Rule;
+        // Keep the existing schedule assertions without an extra dependency.
+        macro_rules! hashmap { ($($key:expr => $value:expr),* $(,)?) => { HashMap::from([$(($key, $value)),*]) }; }
+
+        #[test]
+        fn duration_changes_only_affect_future_breaks() {
+            let mut reminders = BreakReminders::default();
+            reminders.duration = 3;
+            reminders.start(0);
+            reminders.duration = 5;
+            assert_eq!(reminders.take_due(179_999), 0);
+            assert_eq!(reminders.take_due(180_000), 1);
+            assert_eq!(reminders.take_due(180_001), 0);
+            reminders.start(1_800_000);
+            assert_eq!(reminders.take_due(2_099_999), 0);
+            assert_eq!(reminders.take_due(2_100_000), 1);
+        }
+
+        #[test]
+        fn handles_overlapping_breaks_and_discards_stale_reminders() {
+            let mut reminders = BreakReminders::default();
+            reminders.duration = 3;
+            reminders.start(0);
+            reminders.start(60_000);
+            assert_eq!(reminders.take_due(180_000), 1);
+            assert_eq!(reminders.take_due(240_000), 1);
+            reminders.start(300_000);
+            assert_eq!(reminders.take_due(600_000), 0);
+            assert!(reminders.deadlines.is_empty());
+        }
 
         #[test]
         fn test_get_alarms() {
-            setup_logger();
             let rule1 = Rule {
                 serial: 1,
                 days: vec!["Tue".to_string(), "Wed".to_string()],
@@ -176,7 +270,6 @@ mod alarm_manager {
 
         #[test]
         fn test_next_1() {
-            setup_logger();
             let rule1 = Rule {
                 serial: 1,
                 days: vec!["Fri".to_string()],
@@ -270,7 +363,6 @@ mod alarm_manager {
 
         #[test]
         fn test_next_2() {
-            setup_logger();
             let rule1 = Rule {
                 serial: 1,
                 days: vec!["Sat".to_string()],

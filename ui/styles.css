@@ -21,8 +21,22 @@ body, html {
 }
 
 #app-content .container {
-	width:100%;
-	height:100%;
+    width:100%;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+}
+
+.break-settings {
+    padding:10px;
+    margin-bottom:10px;
+    flex-shrink:0;
+}
+
+#app-content .tab-content.rules {
+    flex:1;
+    min-height:0;
+    height:auto;
 }
 
 .tab-content {

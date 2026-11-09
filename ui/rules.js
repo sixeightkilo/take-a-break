@@ -75,9 +75,8 @@ class Rules {
         this.$title = this.$root.querySelector('.rule-title');
 
         /*fix list height for scrolling*/
-        let parentDims = this.$root.getBoundingClientRect();
         this.$list = this.$root.querySelector('#rules-content');
-        this.$list.style.height = parentDims.height + 'px';
+        this.$list.style.height = '100%';
 
         this.loadRules(rules);
     }

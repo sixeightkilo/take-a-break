@@ -13,6 +13,19 @@ script#app-template(type="code")
                     span#prev-alarm
                 .about.has-text-weight-bold About
 
+            .break-settings.card
+                .field
+                    label.label(for="break-duration") Break duration
+                    .control
+                        .select.is-small
+                            select#break-duration(disabled)
+                                option(value="1") 1 minute
+                                option(value="2") 2 minutes
+                                option(value="3") 3 minutes
+                                option(value="4") 4 minutes
+                                option(value="5") 5 minutes
+                    p.help Applies to all intervals from the next break start. Four short beeps mark the end.
+
             .tab-content.rules Rules content
             .tab-content.status Status content
 

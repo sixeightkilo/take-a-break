@@ -36,6 +36,10 @@ class Constants {
         return 'event-next-rule';
     }
 
+    static get EVENT_BREAK_DURATION_UPDATED() { return 'event-break-duration-updated'; }
+    static get CMD_UPDATE_BREAK_DURATION() { return 'cmd-update-break-duration'; }
+    static get EVENT_BREAK_DURATION_APPLIED() { return 'event-break-duration-applied'; }
+
     //for rust
     static get CMD_UPDATE_RULES() {
         return 'cmd-update-rules';

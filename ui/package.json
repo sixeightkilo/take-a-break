@@ -8,6 +8,6 @@
     },
     "scripts": {
         "dev": "vite",
-        "build": "vite build"
+        "build": "pug index.pug --out . && vite build"
     }
 }

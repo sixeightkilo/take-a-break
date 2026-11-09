@@ -43,7 +43,7 @@ class Router {
             this.app.load();
         });
 
-        new BackendHandler();
+        await new BackendHandler().ready;
     }
 }
 

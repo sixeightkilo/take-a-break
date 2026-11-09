@@ -27,7 +27,7 @@ mod player {
             return;
         };
         if end {
-            for _ in 0..4 {
+            for _ in 0..5 {
                 sink.append(
                     SineWave::new(880.0)
                         .amplify(0.2)

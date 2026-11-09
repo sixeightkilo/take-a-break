@@ -23,7 +23,7 @@ Choose a global break duration of 1–5 minutes above the schedule rules. Change
 save automatically and apply from the next break start; a break already underway
 keeps its original duration. Existing settings default to one minute.
 
-The existing beep pattern marks the start, and four short, higher-pitched beeps
+The existing beep pattern marks the start, and five short, higher-pitched beeps
 mark the end. Break-end reminders do not change scheduled start times. Sounds
 are suppressed while the desktop is locked, and stale end reminders are discarded
 after a prolonged sleep. Closing the app cancels pending end reminders.
